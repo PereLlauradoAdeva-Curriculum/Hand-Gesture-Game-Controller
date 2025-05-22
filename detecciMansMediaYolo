@@ -1,0 +1,88 @@
+import cv2
+import mediapipe as mp
+from ultralytics import YOLO  # pip install ultralytics
+import math
+
+# Carrega YOLOv8 entrenat per mans
+# Pots usar 'yolov8n-hand.pt' o un pes customitzat
+#yolo = YOLO('yolov8n-hand.pt')
+yolo = YOLO('https://github.com/ultralytics/assets/raw/v0.0.0/yolov8n-hand.pt')
+
+# Inicialitzar MediaPipe
+mp_hands = mp.solutions.hands
+mp_draw  = mp.solutions.drawing_utils
+hands = mp_hands.Hands(
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.5
+)
+
+cap = cv2.VideoCapture(0)
+threshold = 20  # píxels per definir moviment
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame = cv2.flip(frame, 1)
+    h, w, _ = frame.shape
+
+    # 1) Detecció de la mà amb YOLOv8
+    results = yolo(frame)[0]  # agafem el primer (i únic) result
+    # Filtra deteccions amb bona confiança
+    hands_dets = [det for det in results.boxes.data if det[4] > 0.3]  
+    # cada det: (x1, y1, x2, y2, conf, cls)
+
+    if hands_dets:
+        # Pots triar fer només la primera mà o iterar
+        x1, y1, x2, y2, conf, cls = hands_dets[0]
+        x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+
+        # Dibuixa la caixa de YOLO
+        cv2.rectangle(frame, (x1,y1), (x2,y2), (255,0,0), 2)
+
+        # 2) Crop i processament MediaPipe
+        crop = frame[y1:y2, x1:x2]
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        res = hands.process(crop_rgb)
+
+        if res.multi_hand_landmarks:
+            lm = res.multi_hand_landmarks[0]
+            # Dibuixa landmarks al crop
+            mp_draw.draw_landmarks(crop, lm, mp_hands.HAND_CONNECTIONS)
+
+            # 3) Coordenades del canell i punta (en sistema de crop)
+            ch, cw, _ = crop.shape
+            wrist = lm.landmark[mp_hands.HandLandmark.WRIST]
+            tip   = lm.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+            wx_c, wy_c = int(wrist.x * cw), int(wrist.y * ch)
+            tx_c, ty_c = int(tip.x   * cw), int(tip.y   * ch)
+
+            # 4) Mapatge al frame original
+            wx, wy = wx_c + x1, wy_c + y1
+            tx, ty = tx_c + x1, ty_c + y1
+            dx, dy = tx - wx, ty - wy
+
+            # 5) Càlcul de la direcció
+            if abs(dx) > abs(dy):
+                if dx > threshold:   direccio = "DRETA"
+                elif dx < -threshold:direccio = "ESQUERRA"
+                else:                direccio = None
+            else:
+                if dy > threshold:   direccio = "AVALL"
+                elif dy < -threshold:direccio = "AMUNT"
+                else:                direccio = None
+
+            # Dibuixa punts i text al frame global
+            cv2.circle(frame, (wx, wy), 5, (0,255,0), -1)
+            cv2.circle(frame, (tx, ty), 5, (0,255,0), -1)
+            if direccio:
+                cv2.putText(frame, direccio, (10,50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.5,
+                            (0,255,0), 3)
+
+    cv2.imshow("Pointing Direction", frame)
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
+cap.release()
+cv2.destroyAllWindows()
